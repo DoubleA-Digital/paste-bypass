@@ -1,0 +1,6 @@
+# Local settings (contains API key)
+paste_bypass_config.ini
+
+# Build output / backups
+*.exe
+*.backup.ahk

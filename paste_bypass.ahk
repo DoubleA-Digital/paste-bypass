@@ -20,10 +20,6 @@ global NEARBY := Map(
     "y","tugh",   "z","asx"
 )
 
-; ─── Auto-pair close characters for Brace-Safe mode ─────────
-global PAIR_CLOSE := Map("(",")", "[","]", "{","}", '"','"', "'","'")
-global PAIR_OPEN  := Map(")","(", "]","[", "}","{", '"','"', "'","'")
-
 ; ─── Runtime state ───────────────────────────────────────────
 global g_state      := "idle"   ; idle|countdown|typing|paused|stopped|done
 global g_mode       := "CS"     ; "CS" = Computer Science  |  "EN" = English
@@ -36,212 +32,139 @@ global g_totalCh    := 0
 global g_text       := ""       ; text queued for typing
 global g_origText   := ""       ; English-mode backup for Revert
 global g_targetWin  := 0        ; locked target HWND
-global g_skipStack  := ""       ; Brace-Safe pair-skip stack (string, last char = top)
 global WS_EX_NOACTIVATE := 0x08000000
+global CODE_KEY_DELAY   := 25   ; ms between editor-control keystrokes in CS mode
 
 ; ─── Config file (persists API key) ──────────────────────────
 global CFG_FILE := A_ScriptDir . "\paste_bypass_config.ini"
+EnsureConfigExists()
 global g_apiKey := IniRead(CFG_FILE, "API", "ClaudeKey", "")
-
-; ─── Control-group arrays for show/hide on mode switch ───────
-global CS_Controls := []
-global EN_Controls := []
 
 ; ─── Shortcut on first run ───────────────────────────────────
 CreateShortcutIfNeeded()
 
 ; ════════════════════════════════════════════════════════════
-;  BUILD GUI  (dark theme  #1e1e2e)
+;  BUILD GUI  (dark theme  #1e1e2e  —  clean tabbed layout)
 ; ════════════════════════════════════════════════════════════
 global MyGui := Gui("+AlwaysOnTop", "Paste Bypass — Auto Typer")
 MyGui.BackColor := "1e1e2e"
-MyGui.SetFont("s10 q5 cF8F8F2", "Segoe UI")
+MyGui.SetFont("s11 q5 cF8F8F2", "Segoe UI")
 MyGui.OnEvent("Close", (*) => ExitApp())
 
 ; ── Title ────────────────────────────────────────────────────
-MyGui.SetFont("s14 Bold cF8F8F2")
-MyGui.Add("Text", "x16 y12 w390 Center", "Paste Bypass")
-MyGui.SetFont("s9 c888899")
-MyGui.Add("Text", "x16 y36 w390 Center", "Auto-types text with human-like behaviour")
+MyGui.SetFont("s16 Bold cF8F8F2")
+MyGui.Add("Text", "x0 y14 w480 Center", "Paste Bypass")
+MyGui.SetFont("s10 c7070A0")
+MyGui.Add("Text", "x0 y42 w480 Center", "Auto-types text with human-like behaviour")
+MyGui.Add("Text", "x20 y66 w440 h1 +0x10")
 
-; ── Section 1: Mode Selection ─────────────────────────────────
-MyGui.SetFont("s8 Bold c888899")
-MyGui.Add("Text", "x16 y64", "1  MODE SELECTION")
-MyGui.SetFont("s10 cF8F8F2")
-global RadioCS := MyGui.Add("Radio",
-    "x16 y80 w195 cF8F8F2 Background1e1e2e +Checked", " Computer Science")
-global RadioEN := MyGui.Add("Radio",
-    "x215 y80 w185 cF8F8F2 Background1e1e2e", " English / Writing")
-MyGui.SetFont("s8 c555566")
-MyGui.Add("Text", "x16 y101",
-    "CS = code typing, brace-safe, Java tools     EN = essays, humanize, grammar polish")
-RadioCS.OnEvent("Click", SwitchMode)
-RadioEN.OnEvent("Click", SwitchMode)
-MyGui.Add("Text", "x16 y118 w390 h1 +0x10")
-
-; ── Section 2: Text / Clipboard Preview ───────────────────────
-MyGui.SetFont("s8 Bold c888899")
-MyGui.Add("Text", "x16 y126", "2  TEXT / CLIPBOARD PREVIEW  (editable)")
-MyGui.SetFont("s9 cF8F8F2")
+; ── Text Preview ─────────────────────────────────────────────
+MyGui.SetFont("s9 Bold c888899")
+MyGui.Add("Text", "x20 y78", "TEXT  /  CLIPBOARD PREVIEW")
+MyGui.SetFont("s11 cF8F8F2")
 global Preview := MyGui.Add("Edit",
-    "x16 y142 w390 h78 +Multi +VScroll +Background2a2a3e")
-; Preview button row
-global BtnRefresh := MyGui.Add("Button", "x16  y224 w88  h22", "Refresh")
-global BtnClear   := MyGui.Add("Button", "x110 y224 w70  h22", "Clear")
-global BtnUseText := MyGui.Add("Button", "x186 y224 w112 h22", "Use This Text")
-global BtnCopyPrv := MyGui.Add("Button", "x304 y224 w102 h22", "Copy Preview")
+    "x20 y96 w440 h100 +Multi +VScroll +Background2a2a3e")
+MyGui.SetFont("s10 cF8F8F2")
+global BtnRefresh := MyGui.Add("Button", "x20  y204 w96  h26", "Refresh")
+global BtnClear   := MyGui.Add("Button", "x122 y204 w76  h26", "Clear")
+global BtnUseText := MyGui.Add("Button", "x204 y204 w122 h26", "Use This Text")
+global BtnCopyPrv := MyGui.Add("Button", "x332 y204 w128 h26", "Copy Preview")
 BtnRefresh.OnEvent("Click", RefreshPreview)
 BtnClear.OnEvent("Click",   ClearPreview)
 BtnUseText.OnEvent("Click", LoadPreviewText)
 BtnCopyPrv.OnEvent("Click", CopyPreview)
-MyGui.SetFont("s8 c555566")
-MyGui.Add("Text", "x16 y250",
-    "Refresh = load clipboard   Use This Text = queue for typing   Copy Preview = copy box to clipboard")
-MyGui.Add("Text", "x16 y264 w390 h1 +0x10")
+MyGui.Add("Text", "x20 y238 w440 h1 +0x10")
 
-; ════════════════════════════════════════════════════════════
-;  Section 3a: CODE TOOLS  (Computer Science Mode)
-;  These controls are hidden in English mode.
-; ════════════════════════════════════════════════════════════
-MyGui.SetFont("s8 Bold c888899")
-global t_CS_Hdr := MyGui.Add("Text", "x16 y272", "3  CODE TOOLS")
-CS_Controls.Push(t_CS_Hdr)
+; ── Tools — tabbed CS / EN ───────────────────────────────────
+MyGui.SetFont("s9 Bold c888899")
+MyGui.Add("Text", "x20 y250", "TOOLS")
+global ToolsTab := MyGui.Add("Tab3", "x20 y268 w440 h172", ["CS Mode", "EN Mode"])
+ToolsTab.OnEvent("Change", SwitchMode)
 
-; CodeHS Brace-Safe toggle
-MyGui.SetFont("s10 cF8F8F2")
-global ChkBraceSafe := MyGui.Add("CheckBox",
-    "x16 y288 w300 +Checked cF8F8F2 Background1e1e2e", " CodeHS Brace-Safe Mode")
-CS_Controls.Push(ChkBraceSafe)
-MyGui.SetFont("s8 c888899")
-global t_BraceHint := MyGui.Add("Text", "x34 y307",
-    "Skips auto-inserted closing chars so the editor does not duplicate them")
-CS_Controls.Push(t_BraceHint)
-
-; No Extra Wrapper / Paste Body Only
-MyGui.SetFont("s10 cF8F8F2")
-global ChkNoWrapper := MyGui.Add("CheckBox",
-    "x16 y326 w340 cF8F8F2 Background1e1e2e",
-    " No Extra Method/Class Wrapper  (CodeHS already has the signature)")
-CS_Controls.Push(ChkNoWrapper)
-global ChkBodyOnly := MyGui.Add("CheckBox",
-    "x16 y346 w340 cF8F8F2 Background1e1e2e",
-    " Paste Body Only  (strips outermost method/class braces)")
-CS_Controls.Push(ChkBodyOnly)
-
-; Format Code button
-global BtnFmt := MyGui.Add("Button", "x16 y368 w120 h26", "Format Code")
-CS_Controls.Push(BtnFmt)
-BtnFmt.OnEvent("Click", FormatCode)
-MyGui.SetFont("s8 c555566")
-global t_FmtHint := MyGui.Add("Text", "x142 y372",
-    "Normalises indentation to 4 spaces before typing")
-CS_Controls.Push(t_FmtHint)
-
-global CS_Sep := MyGui.Add("Text", "x16 y400 w390 h1 +0x10")
-CS_Controls.Push(CS_Sep)
-
-; ════════════════════════════════════════════════════════════
-;  Section 3b: ENGLISH TOOLS  (English Mode)
-;  These controls are hidden in CS mode.
-; ════════════════════════════════════════════════════════════
-MyGui.SetFont("s8 Bold c888899")
-global t_EN_Hdr := MyGui.Add("Text", "x16 y272", "3  ENGLISH TOOLS")
-t_EN_Hdr.Visible := false
-EN_Controls.Push(t_EN_Hdr)
-
-; Simple / Strong style
+; ─── Tab 1: CS Mode ──────────────────────────────────────────
+ToolsTab.UseTab(1)
+MyGui.SetFont("s11 Bold cF8F8F2")
+MyGui.Add("Text", "x36 y300 w400", "Clean Code Typing — always on")
 MyGui.SetFont("s9 c888899")
-global t_StyleLbl := MyGui.Add("Text", "x16 y290 w55", "Style:")
-t_StyleLbl.Visible := false
-EN_Controls.Push(t_StyleLbl)
-MyGui.SetFont("s9 cF8F8F2")
+MyGui.Add("Text", "x36 y324 w400",
+    "• Overrides the editor's auto-indent with your exact indentation`n"
+    . "• Removes auto-closed ) ] } `" ' so nothing gets doubled`n"
+    . "• Keeps every line intact — autocomplete can't hijack Enter`n"
+    . "• Tabs → 4 spaces, trailing whitespace trimmed")
+MyGui.SetFont("s10 cF8F8F2")
+global BtnFmt := MyGui.Add("Button", "x36 y400 w120 h26", "Format Code")
+BtnFmt.OnEvent("Click", FormatCode)
+MyGui.SetFont("s9 c666688")
+MyGui.Add("Text", "x164 y406", "Normalises indentation to 4 spaces")
+
+; ─── Tab 2: EN Mode ──────────────────────────────────────────
+ToolsTab.UseTab(2)
+MyGui.SetFont("s10 c888899")
+MyGui.Add("Text", "x36 y302 w100", "Writing style:")
+MyGui.SetFont("s11 cF8F8F2")
 global RadioSimple := MyGui.Add("Radio",
-    "x72 y289 w90 cF8F8F2 Background1e1e2e +Checked", " Simple")
-RadioSimple.Visible := false
-EN_Controls.Push(RadioSimple)
+    "x142 y301 w88 cF8F8F2 Background2a2a3e +Checked", " Simple")
 global RadioStrong := MyGui.Add("Radio",
-    "x168 y289 w100 cF8F8F2 Background1e1e2e", " Strong / Academic")
-RadioStrong.Visible := false
-EN_Controls.Push(RadioStrong)
-MyGui.SetFont("s8 c555566")
-global t_StyleHint := MyGui.Add("Text", "x16 y308",
-    "Simple = natural student writing     Strong = polished, academic tone")
-t_StyleHint.Visible := false
-EN_Controls.Push(t_StyleHint)
-
-; Action buttons
-MyGui.SetFont("s10 cF8F8F2")
-global BtnHumanize := MyGui.Add("Button", "x16  y326 w140 h28", "Humanize Text")
-BtnHumanize.Visible := false
+    "x234 y301 w162 cF8F8F2 Background2a2a3e", " Strong / Academic")
+MyGui.SetFont("s9 c666688")
+MyGui.Add("Text", "x36 y322", "Simple = natural student tone     Strong = polished academic")
+MyGui.SetFont("s11 cF8F8F2")
+global BtnHumanize := MyGui.Add("Button", "x36  y344 w132 h28", "Humanize Text")
+global BtnPolish   := MyGui.Add("Button", "x174 y344 w132 h28", "Polish Grammar")
+global BtnRevert   := MyGui.Add("Button", "x312 y344 w104 h28", "Revert")
 BtnHumanize.OnEvent("Click", HumanizeText)
-EN_Controls.Push(BtnHumanize)
-global BtnPolish := MyGui.Add("Button", "x164 y326 w140 h28", "Polish Grammar")
-BtnPolish.Visible := false
-BtnPolish.OnEvent("Click", PolishGrammar)
-EN_Controls.Push(BtnPolish)
-global BtnRevert := MyGui.Add("Button", "x312 y326 w94 h28", "Revert")
-BtnRevert.Visible := false
-BtnRevert.OnEvent("Click", RevertText)
-EN_Controls.Push(BtnRevert)
-
-; API key field
-MyGui.SetFont("s8 c888899")
-global t_ApiLbl := MyGui.Add("Text", "x16 y362 w90", "Claude API Key:")
-t_ApiLbl.Visible := false
-EN_Controls.Push(t_ApiLbl)
-MyGui.SetFont("s9 cF8F8F2")
+BtnPolish.OnEvent("Click",   PolishGrammar)
+BtnRevert.OnEvent("Click",   RevertText)
+MyGui.SetFont("s10 c888899")
+MyGui.Add("Text", "x36 y382 w110", "Claude API Key:")
+MyGui.SetFont("s11 cF8F8F2")
 global TxtApiKey := MyGui.Add("Edit",
-    "x110 y359 w296 h22 +Password +Background2a2a3e", g_apiKey)
-TxtApiKey.Visible := false
+    "x150 y379 w300 h24 +Password +Background2a2a3e", g_apiKey)
 TxtApiKey.OnEvent("Change", SaveApiKey)
-EN_Controls.Push(TxtApiKey)
+MyGui.SetFont("s9 c666688")
+MyGui.Add("Text", "x36 y412", "Saved automatically to paste_bypass_config.ini")
 
-global EN_Sep := MyGui.Add("Text", "x16 y390 w390 h1 +0x10")
-EN_Sep.Visible := false
-EN_Controls.Push(EN_Sep)
+ToolsTab.UseTab(0)
+MyGui.Add("Text", "x20 y448 w440 h1 +0x10")
 
-; ── Section 4: Typing Speed ───────────────────────────────────
-MyGui.SetFont("s8 Bold c888899")
-MyGui.Add("Text", "x16 y408", "4  TYPING SPEED — WORDS PER MINUTE")
-MyGui.SetFont("s10 cF8F8F2")
+; ── Typing Speed ──────────────────────────────────────────────
+MyGui.SetFont("s9 Bold c888899")
+MyGui.Add("Text", "x20 y460", "SPEED")
+MyGui.SetFont("s10 c888899")
+MyGui.Add("Text", "x20 y478 w50", "WPM:")
 global WpmSlider := MyGui.Add("Slider",
-    "x16 y424 w320 h30 Range10-300 TickInterval50 Line5 Page20", 80)
+    "x74 y474 w316 h30 Range10-300 TickInterval50 Line5 Page20", 80)
 WpmSlider.OnEvent("Change", UpdateWpmLabel)
-global WpmLabel := MyGui.Add("Text", "x344 y430 w62 Right", "80 WPM")
-MyGui.SetFont("s8 c555566")
-MyGui.Add("Text", "x16 y458", "Slow (20)                 Normal (80)                 Fast (200+)")
+global WpmLabel := MyGui.Add("Text", "x394 y480 w66 Right cF8F8F2", "80 WPM")
+MyGui.Add("Text", "x20 y508 w440 h1 +0x10")
 
-; ── Section 5: Humanization & Mistakes ───────────────────────
-MyGui.SetFont("s8 Bold c888899")
-MyGui.Add("Text", "x16 y480", "5  HUMANIZATION & MISTAKES")
-MyGui.SetFont("s10 cF8F8F2")
+; ── Behaviour ─────────────────────────────────────────────────
+MyGui.SetFont("s9 Bold c888899")
+MyGui.Add("Text", "x20 y520", "BEHAVIOUR")
+MyGui.SetFont("s11 cF8F8F2")
 global ChkHuman := MyGui.Add("CheckBox",
-    "x16 y496 w230 +Checked cF8F8F2 Background1e1e2e", " Humanized Typing")
-MyGui.SetFont("s8 c888899")
-MyGui.Add("Text", "x34 y515", "Random pauses between words and after punctuation")
+    "x20 y536 w202 +Checked cF8F8F2 Background1e1e2e", " Humanized Typing")
+global ChkMist  := MyGui.Add("CheckBox",
+    "x230 y536 w144 cF8F8F2 Background1e1e2e", " Make Mistakes")
+MyGui.SetFont("s10 c888899")
+MyGui.Add("Text", "x230 y558 w50", "Freq:")
 MyGui.SetFont("s10 cF8F8F2")
-global ChkMist := MyGui.Add("CheckBox",
-    "x16 y534 w230 cF8F8F2 Background1e1e2e", " Typing Mistakes")
-MyGui.SetFont("s8 c888899")
-MyGui.Add("Text", "x34 y553", "Wrong key → pause → backspace → correct key")
-MyGui.Add("Text", "x34 y570", "Frequency:")
-MyGui.SetFont("s9 cF8F8F2")
 global MistFreqLow  := MyGui.Add("Radio",
-    "x101 y569 w52 cF8F8F2 Background1e1e2e +Checked", " Low")
+    "x282 y557 w60 cF8F8F2 Background1e1e2e +Checked", " Low")
 global MistFreqMed  := MyGui.Add("Radio",
-    "x156 y569 w65 cF8F8F2 Background1e1e2e", " Medium")
+    "x344 y557 w60 cF8F8F2 Background1e1e2e", " Med")
 global MistFreqHigh := MyGui.Add("Radio",
-    "x224 y569 w55 cF8F8F2 Background1e1e2e", " High")
-MyGui.Add("Text", "x16 y592 w390 h1 +0x10")
+    "x406 y557 w54 cF8F8F2 Background1e1e2e", " High")
+MyGui.Add("Text", "x20 y578 w440 h1 +0x10")
 
-; ── Section 6: Controls ───────────────────────────────────────
-MyGui.SetFont("s8 Bold c888899")
-MyGui.Add("Text", "x16 y600", "6  CONTROLS")
-MyGui.SetFont("s10 Bold cF8F8F2")
-global BtnStart  := MyGui.Add("Button", "x16  y616 w88  h34", "Start")
-global BtnPause  := MyGui.Add("Button", "x112 y616 w88  h34", "Pause")
-global BtnResume := MyGui.Add("Button", "x208 y616 w88  h34", "Resume")
-global BtnStop   := MyGui.Add("Button", "x304 y616 w100 h34", "Stop")
+; ── Controls ─────────────────────────────────────────────────
+MyGui.SetFont("s9 Bold c888899")
+MyGui.Add("Text", "x20 y590", "CONTROLS")
+MyGui.SetFont("s12 Bold cF8F8F2")
+global BtnStart  := MyGui.Add("Button", "x20  y606 w160 h38", "Start")
+global BtnPause  := MyGui.Add("Button", "x186 y606 w84  h38", "Pause")
+global BtnResume := MyGui.Add("Button", "x276 y606 w84  h38", "Resume")
+global BtnStop   := MyGui.Add("Button", "x366 y606 w94  h38", "Stop")
 BtnPause.Enabled  := false
 BtnResume.Enabled := false
 BtnStop.Enabled   := false
@@ -249,29 +172,30 @@ BtnStart.OnEvent("Click",  StartTyping)
 BtnPause.OnEvent("Click",  PauseTyping)
 BtnResume.OnEvent("Click", ResumeTyping)
 BtnStop.OnEvent("Click",   StopTyping)
+MyGui.Add("Text", "x20 y652 w440 h1 +0x10")
 
-; ── Section 7: Status & Progress ─────────────────────────────
-MyGui.SetFont("s8 Bold c888899")
-MyGui.Add("Text", "x16 y662", "7  STATUS & PROGRESS")
-MyGui.SetFont("s9 c888899")
-MyGui.Add("Text", "x16 y680 w92", "State:")
-MyGui.Add("Text", "x16 y699 w92", "Target WPM:")
-MyGui.Add("Text", "x16 y718 w92", "Characters:")
-MyGui.Add("Text", "x16 y737 w92", "Words:")
-MyGui.Add("Text", "x16 y756 w92", "Time left:")
-MyGui.SetFont("s9 Bold cF8F8F2")
-global LblState  := MyGui.Add("Text", "x112 y680 w200", "Idle")
-global LblCurWpm := MyGui.Add("Text", "x112 y699 w200", "80 WPM")
-global LblChars  := MyGui.Add("Text", "x112 y718 w200", "0")
-global LblWords  := MyGui.Add("Text", "x112 y737 w200", "0")
-global LblETA    := MyGui.Add("Text", "x112 y756 w200", "—")
+; ── Status ───────────────────────────────────────────────────
+MyGui.SetFont("s9 Bold c888899")
+MyGui.Add("Text", "x20 y664", "STATUS")
+MyGui.SetFont("s10 c888899")
+MyGui.Add("Text", "x20 y682 w92", "State:")
+MyGui.Add("Text", "x248 y682 w92", "WPM:")
+MyGui.Add("Text", "x20 y702 w92", "Characters:")
+MyGui.Add("Text", "x248 y702 w92", "Words:")
+MyGui.Add("Text", "x20 y722 w92", "Time left:")
+MyGui.SetFont("s10 Bold cF8F8F2")
+global LblState  := MyGui.Add("Text", "x116 y682 w126", "Idle")
+global LblCurWpm := MyGui.Add("Text", "x344 y682 w116", "80 WPM")
+global LblChars  := MyGui.Add("Text", "x116 y702 w126", "0")
+global LblWords  := MyGui.Add("Text", "x344 y702 w116", "0")
+global LblETA    := MyGui.Add("Text", "x116 y722 w126", "—")
 global ProgressBar := MyGui.Add("Progress",
-    "x16 y780 w390 h16 cGreen Background2a2a3e", 0)
+    "x20 y746 w440 h14 cGreen Background2a2a3e", 0)
 MyGui.SetFont("s8 c444455")
-MyGui.Add("Text", "x16 y804 w390 Center",
-    "Ctrl+Shift+V = Start   *   Esc = Emergency Stop   *   Ctrl+Shift+P = Pause/Resume")
+MyGui.Add("Text", "x20 y768 w440 Center",
+    "Ctrl+Shift+V = Start   ·   Esc = Emergency Stop   ·   Ctrl+Shift+P = Pause")
 
-MyGui.Show("w422 h826")
+MyGui.Show("w480 h792")
 RefreshPreview()
 
 ; ─── Tray menu ───────────────────────────────────────────────
@@ -296,8 +220,9 @@ SetTimer(TrackTargetWindow, 200)
 ^+v::StartTyping()
 ^+p::TogglePause()
 
+; $ = keyboard hook, so keys the script itself sends can't trigger this
 #HotIf (g_state = "typing" || g_state = "paused" || g_state = "countdown")
-Escape::StopTyping()
+$Escape::StopTyping()
 #HotIf
 
 ; ════════════════════════════════════════════════════════════
@@ -306,21 +231,12 @@ Escape::StopTyping()
 
 SwitchMode(*) {
     global g_mode
-    isCS   := RadioCS.Value
-    g_mode := isCS ? "CS" : "EN"
-
-    ; Toggle visibility of each section's controls
-    for ctrl in CS_Controls
-        ctrl.Visible := isCS
-    for ctrl in EN_Controls
-        ctrl.Visible := !isCS
-
-    ; Apply mode-specific defaults
-    if isCS {
-        ChkMist.Value  := 0   ; mistakes off — code must be exact
-        ChkHuman.Value := 0   ; no humanization for code
+    g_mode := (ToolsTab.Value = 1) ? "CS" : "EN"
+    if (g_mode = "CS") {
+        ChkMist.Value  := 0
+        ChkHuman.Value := 0
     } else {
-        ChkHuman.Value := 1   ; humanized timing on for prose
+        ChkHuman.Value := 1
     }
 }
 
@@ -380,96 +296,6 @@ FormatCode(*) {
 
     Preview.Value := result
     ShowTip("Code formatted")
-}
-
-; ─── Strip outermost method/class body for Paste Body Only ───
-StripOuterWrapper(code) {
-    lines     := StrSplit(code, "`n")
-    n         := lines.Length
-    firstLine := 0
-    lastLine  := 0
-
-    ; Find first declaration line that contains an opening brace
-    i := 1
-    while (i <= n) {
-        t := Trim(lines[i])
-        if (InStr(t, "{") && RegExMatch(t, "i)public|private|protected|static|void|class")) {
-            firstLine := i
-            break
-        }
-        i++
-    }
-    if (firstLine = 0)
-        return code
-
-    ; Walk characters to find the matching closing brace
-    depth   := 0
-    lineIdx := firstLine
-    while (lineIdx <= n) {
-        txt  := lines[lineIdx]
-        cLen := StrLen(txt)
-        cIdx := 1
-        while (cIdx <= cLen) {
-            c := SubStr(txt, cIdx, 1)
-            if (c = "{")
-                depth++
-            if (c = "}")
-                depth--
-            if (depth = 0 && lineIdx > firstLine) {
-                lastLine := lineIdx
-                break
-            }
-            cIdx++
-        }
-        if (lastLine > 0)
-            break
-        lineIdx++
-    }
-
-    if (lastLine = 0 || lastLine <= firstLine)
-        return code
-
-    ; Extract inner lines and remove one level of indentation
-    inner  := ""
-    indent := "    "
-    idx    := firstLine + 1
-    while (idx <= lastLine - 1) {
-        ln := lines[idx]
-        if (SubStr(ln, 1, 4) = indent)
-            ln := SubStr(ln, 5)
-        inner .= ln . (idx < lastLine - 1 ? "`n" : "")
-        idx++
-    }
-    return inner
-}
-
-; ─── No-Wrapper: strip first method/class signature line ─────
-StripSignature(code) {
-    lines  := StrSplit(code, "`n")
-    n      := lines.Length
-    result := ""
-    skip   := true    ; skip until we find the opening {
-
-    i := 1
-    while (i <= n) {
-        ln := lines[i]
-        if skip {
-            ; Stop skipping once we have consumed the opening {
-            if InStr(ln, "{")
-                skip := false
-            i++
-            continue
-        }
-        result .= ln . (i < n ? "`n" : "")
-        i++
-    }
-
-    ; Remove last line if it is just a closing brace
-    trimEnd := RTrim(result)
-    if (SubStr(trimEnd, StrLen(trimEnd)) = "}")
-        result := RTrim(SubStr(trimEnd, 1, StrLen(trimEnd) - 1), "`n")
-
-    return Trim(result, "`n")
 }
 
 ; ════════════════════════════════════════════════════════════
@@ -617,7 +443,7 @@ ExtractAPIText(json) {
 ; ════════════════════════════════════════════════════════════
 
 StartTyping(*) {
-    global g_text, g_state, g_stop, g_pause, g_mode, g_skipStack
+    global g_text, g_state, g_stop, g_pause, g_mode
     global g_charsOut, g_wordsOut, g_startTime, g_totalCh
 
     if (g_state = "typing" || g_state = "countdown")
@@ -636,20 +462,14 @@ StartTyping(*) {
         return
     }
 
-    ; Apply CS-mode pre-processing to the text
-    if (g_mode = "CS") {
-        if (ChkBodyOnly.Value)
-            g_text := StripOuterWrapper(g_text)
-        if (ChkNoWrapper.Value)
-            g_text := StripSignature(g_text)
-    }
+    if (g_mode = "CS")
+        g_text := NormalizeCode(g_text)
 
     g_stop      := false
     g_pause     := false
     g_charsOut  := 0
     g_wordsOut  := 0
     g_totalCh   := StrLen(g_text)
-    g_skipStack := ""
 
     LblChars.Value    := "0 / " . g_totalCh
     LblWords.Value    := "0"
@@ -728,7 +548,7 @@ ResetButtons() {
 ;  CORE TYPING LOOP  (timer-fired thread)
 ; ════════════════════════════════════════════════════════════
 RunTypingSession() {
-    global g_state, g_stop, g_pause, g_text, g_mode, g_skipStack
+    global g_state, g_stop, g_pause, g_text, g_mode
     global g_charsOut, g_wordsOut, g_startTime, g_totalCh, g_targetWin
 
     ; ── 3-second countdown ───────────────────────────────────
@@ -749,6 +569,22 @@ RunTypingSession() {
         WinActivate("ahk_id " . g_targetWin)
     Sleep(200)
 
+    ; ── Check keystroke permissions ──────────────────────────
+    if (g_targetWin && !WinActive("ahk_id " . g_targetWin)) {
+        if !A_IsAdmin {
+            MsgBox("Paste Bypass cannot send keystrokes to this window.`n`n"
+                . "This usually happens when the target app runs as administrator.`n`n"
+                . "Fix: right-click PasteBypass.exe → 'Run as administrator'`n"
+                . "(Only do this if this message keeps appearing.)",
+                "Paste Bypass — Permission Issue", 0x30)
+        }
+        SetNoActivate(false)
+        UnlockTarget()
+        ResetButtons()
+        SetState("idle")
+        return
+    }
+
     ; ── Session starts ───────────────────────────────────────
     g_state     := "typing"
     g_startTime := A_TickCount
@@ -756,87 +592,14 @@ RunTypingSession() {
     BtnPause.Enabled := true
 
     ; Capture toggles at session start (WPM is re-read per char)
-    humanize    := ChkHuman.Value
-    doMistake   := ChkMist.Value
-    braceSafe   := (g_mode = "CS") && ChkBraceSafe.Value
-    mistRate    := MistFreqHigh.Value ? 0.10 : (MistFreqMed.Value ? 0.05 : 0.02)
+    humanize  := ChkHuman.Value
+    doMistake := ChkMist.Value
+    mistRate  := MistFreqHigh.Value ? 0.10 : (MistFreqMed.Value ? 0.05 : 0.02)
 
-    ; ── Per-character loop ────────────────────────────────────
-    loop parse, g_text {
-
-        if g_stop
-            break
-
-        while g_pause
-            Sleep(50)
-        if g_stop
-            break
-
-        ; Re-activate target if focus was stolen (safety net)
-        if (g_targetWin && WinGetID("A") != g_targetWin)
-            WinActivate("ahk_id " . g_targetWin)
-
-        ; Re-read WPM live — slider changes apply immediately
-        wpm       := Max(WpmSlider.Value, 1)
-        baseDelay := Round(12000 / wpm)   ; 60000ms / (wpm × 5 chars/word)
-
-        ch := A_LoopField
-
-        if (ch = "`r")
-            continue
-
-        ; ── Newline ──────────────────────────────────────────
-        if (ch = "`n") {
-            Send("{Enter}")
-            g_charsOut++
-            Sleep(humanize ? Random(180, 380) : baseDelay)
-            continue
-        }
-
-        ; ── Brace-Safe: skip auto-inserted closing chars ─────
-        ; Only active in CS mode. Applies to ) ] " ' (not {} which
-        ; span multiple lines and are handled by the editor's smart indent).
-        if braceSafe {
-            action := BraceSafeHandle(ch)
-            if (action = "skip") {
-                ; Editor already has this closing char — move cursor past it
-                Send("{Right}")
-                continue
-            }
-            ; action = "type" — fall through to normal typing
-        }
-
-        ; ── Typing mistake simulation (English mode or if enabled in CS) ──
-        if (doMistake && Random(0.0, 1.0) < mistRate) {
-            wrong := NearbyKey(ch)
-            if (wrong != ch) {
-                Send("{Raw}" . wrong)
-                Sleep(Random(150, 350))
-                Send("{Backspace}")
-                Sleep(Random(80, 170))
-            }
-        }
-
-        ; ── Type the character ───────────────────────────────
-        Send("{Raw}" . ch)
-        g_charsOut++
-
-        if (ch = " " || ch = "`t")
-            g_wordsOut++
-
-        ; ── Delay ────────────────────────────────────────────
-        delay := baseDelay
-        if humanize {
-            delay := Max(10, Round(baseDelay * (1.0 + Random(-25, 25) / 100.0)))
-            if (ch = " " || ch = "`t")
-                delay += Random(30, 140)
-            if (ch = "." || ch = "!" || ch = "?")
-                delay += Random(120, 340)
-            else if (ch = ",")
-                delay += Random(40, 120)
-        }
-        Sleep(delay)
-    }
+    if (g_mode = "CS")
+        TypeCode(humanize, doMistake, mistRate)
+    else
+        TypeProse(humanize, doMistake, mistRate)
 
     ; ── Done ─────────────────────────────────────────────────
     if (!g_stop) {
@@ -857,38 +620,162 @@ RunTypingSession() {
 }
 
 ; ════════════════════════════════════════════════════════════
-;  BRACE-SAFE HELPER
+;  TYPING ENGINES
 ; ════════════════════════════════════════════════════════════
 
-; Called for every character in CS + Brace-Safe mode.
-; Returns "skip"  — caller should press Right and not type ch
-; Returns "type"  — caller should type ch normally
-BraceSafeHandle(ch) {
-    global g_skipStack
-
-    ; For opening brackets: type normally but push expected close to stack
-    if (ch = "(" || ch = "[" || ch = '"' || ch = "'") {
-        ; If this is a closing quote and it matches stack top, skip it
-        if ((ch = '"' || ch = "'") && StrLen(g_skipStack) > 0
-            && SubStr(g_skipStack, -1) = ch) {
-            g_skipStack := SubStr(g_skipStack, 1, StrLen(g_skipStack) - 1)
-            return "skip"
+; ─── EN mode: plain character stream ─────────────────────────
+TypeProse(humanize, doMistake, mistRate) {
+    global g_charsOut
+    loop parse, g_text {
+        if !CheckRunning()
+            return
+        ch := A_LoopField
+        if (ch = "`r")
+            continue
+        if (ch = "`n") {
+            Send("{Enter}")
+            g_charsOut++
+            Sleep(humanize ? Random(180, 380) : GetBaseDelay())
+            continue
         }
-        ; Otherwise it's an opener — push expected close
-        g_skipStack .= PAIR_CLOSE[ch]
-        return "type"
+        TypeChar(ch, humanize, doMistake, mistRate)
+    }
+}
+
+; ─── CS mode: line-by-line, editor-proof ─────────────────────
+; NOTE: never send {Esc} here — newer Ace (CodeHS) treats Esc as
+; "leave the editor", and the next Enter only refocuses it.
+; Sentinel is "~" (not "_") so it never opens autocomplete.
+; Code editors (CodeHS/Ace, Monaco, CodeMirror) fight a keystroke
+; stream in two ways:
+;   1. Auto-close: typing ( [ { " ' inserts the closer too.
+;   2. Auto-indent: Enter / } / : rewrite the line's leading whitespace.
+; Since every character is typed left-to-right, anything the editor
+; auto-inserts always sits to the RIGHT of the cursor, and auto-indent
+; only ever touches LEADING whitespace. So for each line we:
+;   type the content (no indent) → delete everything right of the cursor
+;   → replace the leading whitespace with the original indentation.
+TypeCode(humanize, doMistake, mistRate) {
+    global g_charsOut
+    lines := StrSplit(g_text, "`n")
+
+    for i, line in lines {
+        if !CheckRunning()
+            return
+
+        RegExMatch(line, "^ *", &m)
+        indent  := m[0]
+        content := SubStr(line, StrLen(indent) + 1)
+
+        if (i > 1) {
+            CodeKey("{Enter}")
+            g_charsOut++
+            Sleep(humanize ? Random(180, 380) : GetBaseDelay())
+        }
+
+        ; Blank line: leave it. Any auto-indent left here is invisible, and
+        ; select-to-line-start + delete is too destructive if an Enter misfires.
+        if (content = "")
+            continue
+
+        loop parse, content {
+            if !CheckRunning()
+                return
+            TypeChar(A_LoopField, humanize, doMistake, mistRate)
+        }
+
+        ; 1. Drop auto-inserted closers. Typing a space over the selection
+        ;    then deleting it works even when the selection is empty
+        ;    (a bare Delete would merge the next line up).
+        CodeKey("+{End}")
+        CodeKey("{Space}")
+        CodeKey("{Backspace}")
+
+        ; 2. Force the original indentation. Home → first non-space char,
+        ;    Shift+Home → select the editor's indent (empty if none).
+        ;    "~" replaces the selection, Backspace clears it, then type ours.
+        CodeKey("{Home}")
+        CodeKey("+{Home}")
+        CodeKey("~")
+        CodeKey("{Backspace}")
+        if (indent != "") {
+            Send("{Raw}" . indent)
+            Sleep(CODE_KEY_DELAY)
+            g_charsOut += StrLen(indent)
+        }
+        CodeKey("{End}")
+    }
+}
+
+; ─── Waits out a pause and refocuses the target. False = stopped ─
+CheckRunning() {
+    global g_stop, g_pause, g_targetWin
+    if g_stop
+        return false
+    while g_pause
+        Sleep(50)
+    if g_stop
+        return false
+    ; Re-activate target if focus was stolen (safety net)
+    try {
+        if (g_targetWin && WinGetID("A") != g_targetWin)
+            WinActivate("ahk_id " . g_targetWin)
+    }
+    return true
+}
+
+; ─── Type one character with speed / humanize / mistake rules ─
+TypeChar(ch, humanize, doMistake, mistRate) {
+    global g_charsOut, g_wordsOut
+    baseDelay := GetBaseDelay()
+
+    if (doMistake && Random(0.0, 1.0) < mistRate) {
+        wrong := NearbyKey(ch)
+        if (wrong != ch) {
+            Send("{Raw}" . wrong)
+            Sleep(Random(150, 350))
+            Send("{Backspace}")
+            Sleep(Random(80, 170))
+        }
     }
 
-    ; For closing brackets: skip if expected (auto-inserted by editor)
-    if (ch = ")" || ch = "]") {
-        if (StrLen(g_skipStack) > 0 && SubStr(g_skipStack, -1) = ch) {
-            g_skipStack := SubStr(g_skipStack, 1, StrLen(g_skipStack) - 1)
-            return "skip"
-        }
-    }
+    Send("{Raw}" . ch)
+    g_charsOut++
+    if (ch = " ")
+        g_wordsOut++
 
-    ; { and } are typed normally — CodeMirror's smart indent handles them
-    return "type"
+    delay := baseDelay
+    if humanize {
+        delay := Max(10, Round(baseDelay * (1.0 + Random(-25, 25) / 100.0)))
+        if (ch = " ")
+            delay += Random(30, 140)
+        if (ch = "." || ch = "!" || ch = "?")
+            delay += Random(120, 340)
+        else if (ch = ",")
+            delay += Random(40, 120)
+    }
+    Sleep(delay)
+}
+
+; Re-read WPM live — slider changes apply immediately
+GetBaseDelay() => Round(12000 / Max(WpmSlider.Value, 1))   ; 60000ms / (wpm × 5 chars/word)
+
+CodeKey(keys) {
+    Send(keys)
+    Sleep(CODE_KEY_DELAY)
+}
+
+; ─── Clean up code before typing ─────────────────────────────
+; Tabs → 4 spaces, non-breaking spaces (from web copies) → spaces,
+; trailing whitespace and trailing blank lines removed.
+NormalizeCode(code) {
+    code := StrReplace(code, "`r")
+    code := StrReplace(code, "`t", "    ")
+    code := StrReplace(code, Chr(160), " ")
+    out := ""
+    for i, ln in StrSplit(code, "`n")
+        out .= (i > 1 ? "`n" : "") . RTrim(ln, " ")
+    return RTrim(out, "`n")
 }
 
 ; ════════════════════════════════════════════════════════════
@@ -990,11 +877,33 @@ CreateShortcutIfNeeded() {
     try {
         shell := ComObject("WScript.Shell")
         lnk   := shell.CreateShortcut(path)
-        lnk.TargetPath       := A_AhkPath
-        lnk.Arguments        := '"' . A_ScriptFullPath . '"'
+        if A_IsCompiled {
+            ; Running as compiled .exe — point shortcut directly at it
+            lnk.TargetPath   := A_ScriptFullPath
+            lnk.Arguments    := ""
+            lnk.IconLocation := A_ScriptFullPath . ",0"
+        } else {
+            ; Running as .ahk — launch via AutoHotkey interpreter
+            lnk.TargetPath   := A_AhkPath
+            lnk.Arguments    := '"' . A_ScriptFullPath . '"'
+            lnk.IconLocation := A_AhkPath . ",0"
+        }
         lnk.WorkingDirectory := A_ScriptDir
-        lnk.IconLocation     := A_AhkPath . ",0"
         lnk.Description      := "Paste Bypass Auto Typer"
         lnk.Save()
+    }
+}
+
+; ── Create config INI with defaults if it does not exist ─────
+EnsureConfigExists() {
+    if FileExist(CFG_FILE)
+        return
+    try {
+        IniWrite("", CFG_FILE, "API", "ClaudeKey")
+    } catch as e {
+        MsgBox("Could not create config file:`n" . CFG_FILE
+            . "`n`nMake sure the app folder is not read-only."
+            . "`nSettings will not be saved this session.",
+            "Paste Bypass — Config Error", 0x30)
     }
 }
